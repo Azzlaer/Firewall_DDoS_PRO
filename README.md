@@ -12,6 +12,18 @@ Monitor de conexiones TCP en tiempo real, firewall automático inteligente, logg
 
 ---
 
+## 📍 Imagenes
+
+![Preview](https://github.com/Azzlaer/Firewall_DDoS_PRO/blob/main/img/1.png)
+![Preview](https://github.com/Azzlaer/Firewall_DDoS_PRO/blob/main/img/2.png)
+![Preview](https://github.com/Azzlaer/Firewall_DDoS_PRO/blob/main/img/3.png)
+![Preview](https://github.com/Azzlaer/Firewall_DDoS_PRO/blob/main/img/4.png)
+![Preview](https://github.com/Azzlaer/Firewall_DDoS_PRO/blob/main/img/5.png)
+![Preview](https://github.com/Azzlaer/Firewall_DDoS_PRO/blob/main/img/6.png)
+![Preview](https://github.com/Azzlaer/Firewall_DDoS_PRO/blob/main/img/7.png)
+
+---
+
 ## 📍 Características principales
 
 | Módulo | Función |
