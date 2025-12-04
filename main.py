@@ -19,6 +19,8 @@ Funcionalidad:
     📡 Webhooks & Alertas
     ⚙ Sistema & Reglas
     🛠 Herramientas (WHOIS / Ping / GeoIP)
+
+Creado por ChatGPT OpenAI + Azzlaer para LatinBattle.com
 """
 
 import os
@@ -61,6 +63,7 @@ class ConfigManager:
             "monitor_interval_sec": "1",
             "auto_block_enabled": "yes",
             "auto_block_threshold": "50",
+            "threshold_action": "notify",   # notify | block
             "auto_block_temporary_minutes": "30",
             "max_history_points": "120",
             "whitelist": "",
@@ -197,7 +200,7 @@ def del_firewall_rule(name):
 
 
 # ----------------------------------------------------------------------
-# AbuseIPDB
+# AbuseIPDB Lookup
 # ----------------------------------------------------------------------
 def abuseipdb_score(ip, api_key, timeout=5):
     if not api_key:
@@ -294,8 +297,7 @@ def notify_all_helper(cfg, subject, body, level="INFO"):
         f"{body}"
     )
 
-    email_subject = f"{icon} {subject}"
-    send_email(cfg, email_subject, full_body)
+    send_email(cfg, f"{icon} {subject}", full_body)
     send_telegram(cfg, full_body)
     send_discord(cfg, full_body)
 
@@ -353,14 +355,21 @@ class App:
         self.history = []
         self.max_history = self.cfg.getint("GENERAL", "max_history_points", 120)
 
-        self._build_tabs_ui()
-
+        # Cola y evento para monitor
         self.queue = queue.Queue()
         self.stop_event = threading.Event()
-        self.monitor = MonitorThread(self.cfg, self.queue, self.stop_event)
-        self.monitor.start()
+        self.monitor = None
+
+        # Construcción de pestañas
+        self._build_tabs_ui()
+
+        # Arranca el monitor por defecto
+        self.start_monitor()
+
+        # Procesado periódico de la cola
         self.root.after(200, self._process_queue)
 
+        # Pre-bloqueo de blacklist y refresco inicial
         self._preblock_blacklist()
         self.refresh_logs()
         self._update_block_tab()
@@ -399,7 +408,7 @@ class App:
         top = ttk.Frame(self.tab_dashboard)
         top.pack(side=tk.TOP, fill=tk.X, padx=8, pady=6)
 
-        self.lbl_status = ttk.Label(top, text="Estado: OK")
+        self.lbl_status = ttk.Label(top, text="Estado: Monitoreando...")
         self.lbl_status.pack(side=tk.LEFT)
 
         self.lbl_total = ttk.Label(top, text="Conexiones: 0")
@@ -430,6 +439,9 @@ class App:
         # Botones rápidos
         bottom = ttk.Frame(self.tab_dashboard)
         bottom.pack(side=tk.TOP, fill=tk.X, padx=8, pady=4)
+
+        ttk.Button(bottom, text="Start Monitor", command=self.start_monitor).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bottom, text="Stop Monitor", command=self.stop_monitor).pack(side=tk.LEFT, padx=4)
 
         ttk.Button(bottom, text="Bloquear IP seleccionada",
                    command=self.block_selected).pack(side=tk.LEFT, padx=4)
@@ -573,6 +585,22 @@ class App:
         ttk.Checkbutton(frame_auto, text="Habilitar auto-bloqueo",
                         variable=self.var_auto_block).pack(anchor=tk.W, padx=6, pady=2)
 
+        # Selección del modo de threshold
+        self.var_threshold_action = tk.StringVar(
+            value=self.cfg.get("GENERAL", "threshold_action", "notify")
+        )
+
+        ttk.Label(frame_auto, text="Acción al superar threshold:").pack(anchor=tk.W, padx=6)
+
+        rb1 = ttk.Radiobutton(frame_auto, text="Solo notificar",
+                              variable=self.var_threshold_action, value="notify")
+        rb2 = ttk.Radiobutton(frame_auto, text="Notificar + Bloquear IP automáticamente",
+                              variable=self.var_threshold_action, value="block")
+
+        rb1.pack(anchor=tk.W, padx=16)
+        rb2.pack(anchor=tk.W, padx=16)
+
+        # Threshold numérico
         row_auto = ttk.Frame(frame_auto)
         row_auto.pack(fill=tk.X, padx=6, pady=2)
         ttk.Label(row_auto, text="Threshold conexiones desde misma IP:").pack(side=tk.LEFT)
@@ -581,6 +609,7 @@ class App:
         self.spin_threshold.delete(0, "end")
         self.spin_threshold.insert(0, self.cfg.getint("GENERAL", "auto_block_threshold", 50))
 
+        # Duración
         row_temp = ttk.Frame(frame_auto)
         row_temp.pack(fill=tk.X, padx=6, pady=2)
         ttk.Label(row_temp, text="Duración bloqueo (min, 0 = permanente):").pack(side=tk.LEFT)
@@ -589,6 +618,7 @@ class App:
         self.spin_temp.delete(0, "end")
         self.spin_temp.insert(0, self.cfg.getint("GENERAL", "auto_block_temporary_minutes", 30))
 
+        # Intervalo
         row_interval = ttk.Frame(frame_auto)
         row_interval.pack(fill=tk.X, padx=6, pady=2)
         ttk.Label(row_interval, text="Intervalo de monitor (segundos):").pack(side=tk.LEFT)
@@ -597,9 +627,10 @@ class App:
         self.spin_interval.delete(0, "end")
         self.spin_interval.insert(0, self.cfg.getint("GENERAL", "monitor_interval_sec", 1))
 
+        # Historial gráfico
         row_hist = ttk.Frame(frame_auto)
         row_hist.pack(fill=tk.X, padx=6, pady=2)
-        ttk.Label(row_hist, text="Historial máximo de puntos (gráfico):").pack(side=tk.LEFT)
+        ttk.Label(row_hist, text="Historial máximo puntos (gráfico):").pack(side=tk.LEFT)
         self.spin_history = tk.Spinbox(row_hist, from_=10, to=1000, width=8)
         self.spin_history.pack(side=tk.LEFT, padx=6)
         self.spin_history.delete(0, "end")
@@ -622,12 +653,12 @@ class App:
         # Whitelist / Blacklist
         frame_wb = ttk.LabelFrame(frm, text="Whitelist / Blacklist")
         frame_wb.pack(fill=tk.BOTH, pady=4, expand=True)
-        ttk.Label(frame_wb, text="Whitelist (IPs, separadas por coma):").pack(anchor=tk.W, padx=6)
+        ttk.Label(frame_wb, text="Whitelist (IPs separadas por coma):").pack(anchor=tk.W, padx=6)
         self.entry_whitelist = ttk.Entry(frame_wb)
         self.entry_whitelist.pack(fill=tk.X, padx=6, pady=2)
         self.entry_whitelist.insert(0, self.cfg.get("GENERAL", "whitelist", ""))
 
-        ttk.Label(frame_wb, text="Blacklist (IPs, separadas por coma):").pack(anchor=tk.W, padx=6)
+        ttk.Label(frame_wb, text="Blacklist (IPs separadas por coma):").pack(anchor=tk.W, padx=6)
         self.entry_blacklist = ttk.Entry(frame_wb)
         self.entry_blacklist.pack(fill=tk.X, padx=6, pady=2)
         self.entry_blacklist.insert(0, self.cfg.get("GENERAL", "blacklist", ""))
@@ -767,6 +798,7 @@ class App:
     def save_config_from_ui(self):
         # GENERAL
         self.cfg.set("GENERAL", "auto_block_enabled", "yes" if self.var_auto_block.get() else "no")
+        self.cfg.set("GENERAL", "threshold_action", self.var_threshold_action.get())
         self.cfg.set("GENERAL", "auto_block_threshold", self.spin_threshold.get())
         self.cfg.set("GENERAL", "auto_block_temporary_minutes", self.spin_temp.get())
         self.cfg.set("GENERAL", "monitor_interval_sec", self.spin_interval.get())
@@ -828,7 +860,7 @@ class App:
             pass
 
     # ------------------------------------------------------------------
-    # Auto-bloqueo (SIN messagebox)
+    # Auto-bloqueo con modos notify / block
     # ------------------------------------------------------------------
     def _auto_block_check(self, ip_counts):
         if not self.cfg.getboolean("GENERAL", "auto_block_enabled", True):
@@ -836,6 +868,8 @@ class App:
 
         threshold = self.cfg.getint("GENERAL", "auto_block_threshold", 50)
         temp_minutes = self.cfg.getint("GENERAL", "auto_block_temporary_minutes", 30)
+        mode = self.cfg.get("GENERAL", "threshold_action", "notify")
+
         whitelist = [
             x.strip() for x in self.cfg.get("GENERAL", "whitelist", "").split(",") if x.strip()
         ]
@@ -848,33 +882,35 @@ class App:
             if ip in self.rule_names:
                 continue
 
-            should_block = False
+            triggered = False
             reason = ""
 
             if count >= threshold:
-                should_block = True
+                triggered = True
                 reason = f"count={count}"
 
             if abuse_api_key:
                 score = abuseipdb_score(ip, abuse_api_key)
                 if score is not None and score >= abuse_min:
-                    should_block = True
+                    triggered = True
                     reason += f";abuse_score={score}"
 
-            if should_block:
-                subj = f"[DDoS Defender] Auto-block {ip}"
-                body = f"Auto-block triggered for {ip}. Reason: {reason}"
+            if triggered:
+                self.logger.log("WARN", ip, "THRESHOLD_EXCEEDED", reason)
 
-                self.logger.log("WARN", ip, "AUTO_BLOCK", reason)
-                # Bloqueo silencioso (sin messagebox)
-                self._block_ip(ip, temp_minutes, silent=True)
+                subj = f"[DDoS Defender] Umbral excedido - {ip}"
+                body = f"La IP {ip} superó threshold.\nRazón: {reason}"
 
-                # Notificaciones en hilo aparte
+                # Notificaciones
                 threading.Thread(
                     target=notify_all_helper,
                     args=(self.cfg, subj, body, "WARN"),
                     daemon=True
                 ).start()
+
+                # Si está en modo bloqueo, además bloquea
+                if mode == "block":
+                    self._block_ip(ip, temp_minutes, silent=True)
 
     # ------------------------------------------------------------------
     # Firewall / bloqueos
@@ -1074,6 +1110,20 @@ class App:
             if hasattr(self, "txt_logs"):
                 self.txt_logs.delete(1.0, tk.END)
                 self.txt_logs.insert(tk.END, f"Error reading logs: {e}")
+
+    # ---------------------- CONTROL MONITOR ----------------------------
+    def start_monitor(self):
+        if self.monitor is not None and self.monitor.is_alive():
+            self.lbl_status.config(text="Estado: Monitoreando...")
+            return
+        self.stop_event.clear()
+        self.monitor = MonitorThread(self.cfg, self.queue, self.stop_event)
+        self.monitor.start()
+        self.lbl_status.config(text="Estado: Monitoreando...")
+
+    def stop_monitor(self):
+        self.stop_event.set()
+        self.lbl_status.config(text="Estado: Detenido")
 
     def stop(self):
         self.stop_event.set()
